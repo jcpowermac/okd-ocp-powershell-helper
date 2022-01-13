@@ -1,0 +1,22 @@
+{
+  "apiVersion": "v1",
+  "baseDomain": "domain",
+  "metadata": {
+    "name": "cluster"
+  },
+  "platform": {
+    "vsphere": {
+      "vcenter": "vcsa",
+      "username": "username",
+      "password": "password",
+      "datacenter": "dc1",
+      "defaultDatastore": "datastore",
+      "cluster": "cluster",
+      "network": "network",
+      "apiVIP": "ipaddr",
+      "ingressVIP": "ipaddr"
+    }
+  },
+  "pullSecret": "",
+  "sshKey": ""
+}

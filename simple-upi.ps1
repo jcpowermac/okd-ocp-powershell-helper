@@ -26,7 +26,6 @@ if (-Not (Test-Path -Path "template-$($Version).ova")) {
     Invoke-WebRequest -uri $ovaUri -OutFile "template-$($Version).ova"
 }
 
-
 $config = Get-Content -Path ./install-config.json | ConvertFrom-Json
 
 $config.metadata.name = $clustername
@@ -58,7 +57,7 @@ $templateName = "$($metadata.infraID)-rhcos"
 
 $folder = Get-Folder -Name $metadata.infraID -ErrorAction continue 
 if (-Not $?) {
-	(get-view (Get-Datacenter -Name ibmcloud).ExtensionData.vmfolder).CreateFolder($metadata.infraID)
+	(get-view (Get-Datacenter -Name $datacenter).ExtensionData.vmfolder).CreateFolder($metadata.infraID)
 	$folder = Get-Folder -Name $metadata.infraID
 }
 
@@ -68,8 +67,6 @@ if (-Not $?) {
     $vmhost = Get-Random -InputObject (Get-VMHost -Location (Get-Cluster $cluster))
     $ovfConfig = Get-OvfConfiguration -Ovf "template-$($Version).ova"
     $ovfConfig.NetworkMapping.VM_Network.Value = $portgroup
-
-    # add folder to import-vapp
     $template = Import-Vapp -Source "template-$($Version).ova" -Name $templateName -OvfConfiguration $ovfConfig -VMHost $vmhost -Datastore $Datastore -InventoryLocation $folder -Force:$true
 }
 
@@ -79,7 +76,6 @@ foreach ($key in $vmHash.virtualmachines.Keys) {
     $node = $vmHash.virtualmachines[$key]
 
     $name = "$($metadata.infraID)-$($key)"
-
 
     $rp = Get-Cluster -Name $node.cluster -Server $node.server
     $datastore = Get-Datastore -Name $node.datastore -Server $node.server
