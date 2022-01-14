@@ -146,26 +146,27 @@ $kubeurl = $match.Matches.Groups[1].Value
 Write-Host -NoNewLine "Waiting for bootstrap to complete"
 # Wait for bootstrap to complete
 :bootstrap while ($true) {
+    Start-Sleep -Seconds 30
+    Write-Host -NoNewLine "."
     try {
-        Write-Host -NoNewLine "."
-        Start-Sleep -Seconds 30
         $webrequest = Invoke-WebRequest -Certificate $cert -Uri "$($kubeurl)/api/v1/namespaces/kube-system/configmaps/bootstrap" -SkipCertificateCheck
 
         $bootstrapStatus = (ConvertFrom-Json $webrequest.Content).data.status
 
         if ($bootstrapStatus -eq "complete") {
-            Write-Host "Bootstrap complete."
+            Write-Host "`nBootstrap complete"
             break bootstrap
         }
     }
     catch {}
 }
 
+Write-Host "Waiting for install to complete"
 # Wait for the cluster to complete
 :installcomplete while($true) {
+    Start-Sleep -Seconds 30
+    Write-Host -NoNewline "."
     try {
-        Start-Sleep -Seconds 30
-
         $webrequest = Invoke-WebRequest -Certificate $cert -Uri "$($kubeurl)/apis/config.openshift.io/v1/clusterversions" -SkipCertificateCheck
 
         $clusterversions = ConvertFrom-Json $webrequest.Content -AsHashtable
@@ -175,13 +176,13 @@ Write-Host -NoNewLine "Waiting for bootstrap to complete"
             switch ($condition['type']) {
                 "Progressing" {
                     if ($condition['status'] -eq "True") {
-                        Write-Host -NoNewline "."
+                        Write-Host -NoNewline "P"
                         continue
                     }
                 }
                 "Available" {
                     if ($condition['status'] -eq "True") {
-                        Write-Host "Install complete."
+                        Write-Host "`nInstall complete."
                         break installcomplete
                     }
                     continue
