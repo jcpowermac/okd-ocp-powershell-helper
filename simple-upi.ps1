@@ -82,6 +82,11 @@ if (-Not $?) {
     $ovfConfig = Get-OvfConfiguration -Ovf "template-$($Version).ova"
     $ovfConfig.NetworkMapping.VM_Network.Value = $portgroup
     $template = Import-Vapp -Source "template-$($Version).ova" -Name $templateName -OvfConfiguration $ovfConfig -VMHost $vmhost -Datastore $Datastore -InventoryLocation $folder -Force:$true
+    $template | Set-VM -MemoryGB 16 -NumCpu 4 -CoresPerSocket 4 -Confirm:$false
+    $template | Get-HardDisk | Select-Object -First 1 | Set-HardDisk -CapacityGB 128 -Confirm:$false
+    $template | New-AdvancedSetting -name "guestinfo.ignition.config.data.encoding" -value "base64" -confirm:$false -Force > $null
+    $snapshot = New-Snapshot -VM $template -Name "linked-clone" -Description "linked-clone" -Memory -Quiesce
+
 }
 
 # Take the $virtualmachines defined in upi-variables and convert to a powershell object
@@ -100,12 +105,9 @@ foreach ($key in $vmHash.virtualmachines.Keys) {
     $ignition = [Convert]::ToBase64String($bytes)
 
     # Clone the virtual machine from the imported template
-    $vm = New-VM -VM $template -Name $name -ResourcePool $rp -Datastore $datastore -Location $folder
-    $vm | Get-HardDisk | Select-Object -First 1 | Set-HardDisk -CapacityGB 128 -Confirm:$false
-    $vm | Set-VM -MemoryGB 16 -NumCpu 4 -CoresPerSocket 4 -Confirm:$false
+    $vm = New-VM -VM $template -Name $name -ResourcePool $rp -Datastore $datastore -Location $folder -LinkedClone -ReferenceSnapshot $snapshot
 
     $vm | New-AdvancedSetting -name "guestinfo.ignition.config.data" -value $ignition -confirm:$false -Force > $null
-    $vm | New-AdvancedSetting -name "guestinfo.ignition.config.data.encoding" -value "base64" -confirm:$false -Force > $null
     $vm | New-AdvancedSetting -name "guestinfo.hostname" -value $name -Confirm:$false -Force
 
     # in OKD the OVA is not up-to-date
@@ -155,11 +157,13 @@ Write-Host -NoNewLine "Waiting for bootstrap to complete"
 
         if ($bootstrapStatus -eq "complete") {
             Write-Host "`nBootstrap complete"
+            Get-VM "$($metadata.infraID)-bootstrap" | Stop-VM -Confirm:$false | Remove-VM -Confirm:$false
             break bootstrap
         }
     }
     catch {}
 }
+
 
 Write-Host "Waiting for install to complete"
 # Wait for the cluster to complete
