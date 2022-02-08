@@ -8,15 +8,41 @@ $ErrorActionPreference = "Stop"
 # Connect to vCenter
 Connect-VIServer -Server $vcenter -Credential (Import-Clixml $vcentercredpath)
 
-# how to get the installer
-# change this to the api and grab the latest okd release based on version
-$installerUrl = "https://github.com/openshift/okd/releases/download/4.9.0-0.okd-2021-12-12-025847/openshift-install-linux-4.9.0-0.okd-2021-12-12-025847.tar.gz"
+Write-Output "Downloading the most recent $($version) installer"
+
+$releaseApiUri = "https://api.github.com/repos/openshift/okd/releases"
+$progressPreference = 'silentlyContinue'
+$webrequest = Invoke-WebRequest -uri $releaseApiUri
+$progressPreference = 'Continue'
+$releases = ConvertFrom-Json $webrequest.Content -AsHashtable
+$publishedDate = (Get-Date).AddDays(-365)
+$currentRelease = $null
+
+foreach($r in $releases) {
+	if($r['name'] -like "*$($version)*") {
+		if ($publishedDate -lt $r['published_at'] ) {
+			$publishedDate = $r['published_at']
+			$currentRelease = $r
+		}
+	}
+}
+
+foreach($asset in $currentRelease['assets']) {
+	if($asset['name'] -like "openshift-install-linux*") {
+		$installerUrl = $asset['browser_download_url']
+	}
+}
 
 # If openshift-install doesn't exist on the path, download it and extract
 if (-Not (Test-Path -Path "openshift-install")) {
+
+    $progressPreference = 'silentlyContinue'
     Invoke-WebRequest -uri $installerUrl -OutFile "installer.tar.gz"
     tar -xvf "installer.tar.gz"
+    $progressPreference = 'Continue'
 }
+
+Write-Output "Downloading FCOS OVA"
 
 # If the OVA doesn't exist on the path, determine the url from openshift-install and download it.
 if (-Not (Test-Path -Path "template-$($Version).ova")) {
@@ -24,7 +50,9 @@ if (-Not (Test-Path -Path "template-$($Version).ova")) {
 
     $coreosData = Get-Content -Path ./coreos.json | ConvertFrom-Json -AsHashtable
     $ovaUri = $coreosData.architectures.x86_64.artifacts.vmware.formats.ova.disk.location
+    $progressPreference = 'silentlyContinue'
     Invoke-WebRequest -uri $ovaUri -OutFile "template-$($Version).ova"
+    $progressPreference = 'Continue'
 }
 
 # Without having to add additional powershell modules yaml is difficult to deal
@@ -49,13 +77,12 @@ $config.platform.vsphere.ingressVIP = $ingressvip
 $config.pullSecret = $pullsecret -replace "`n", "" -replace " ", ""
 
 # Write out the install-config.yaml (really json)
-$config | ConvertTo-Json | Out-File -FilePath install-config.yaml -Force:$true
+$config | ConvertTo-Json -Depth 8 | Out-File -FilePath install-config.yaml -Force:$true
 
 # openshift-install create manifests
 start-process -Wait -FilePath ./openshift-install -argumentlist @("create", "manifests")
 # openshift-install create ignition-configs
 start-process -Wait -FilePath ./openshift-install -argumentlist @("create", "ignition-configs")
-
 
 # Convert the installer metadata to a powershell object
 $metadata = Get-Content -Path ./metadata.json | ConvertFrom-Json
@@ -82,9 +109,13 @@ if (-Not $?) {
     $ovfConfig = Get-OvfConfiguration -Ovf "template-$($Version).ova"
     $ovfConfig.NetworkMapping.VM_Network.Value = $portgroup
     $template = Import-Vapp -Source "template-$($Version).ova" -Name $templateName -OvfConfiguration $ovfConfig -VMHost $vmhost -Datastore $Datastore -InventoryLocation $folder -Force:$true
+
+    $templateVIObj = Get-View -VIObject $template.Name
+    $templateVIObj.UpgradeVM($hardwareVersion)
+
     $template | Set-VM -MemoryGB 16 -NumCpu 4 -CoresPerSocket 4 -Confirm:$false
     $template | Get-HardDisk | Select-Object -First 1 | Set-HardDisk -CapacityGB 128 -Confirm:$false
-    $template | New-AdvancedSetting -name "guestinfo.ignition.config.data.encoding" -value "base64" -confirm:$false -Force > $null
+    $template | New-AdvancedSetting -name "guestinfo.ignition.config.data.encoding" -value "base64" -confirm:$false -Force
     $snapshot = New-Snapshot -VM $template -Name "linked-clone" -Description "linked-clone" -Memory -Quiesce
 
 }
@@ -92,6 +123,10 @@ if (-Not $?) {
 # Take the $virtualmachines defined in upi-variables and convert to a powershell object
 $vmHash = ConvertFrom-Json -InputObject $virtualmachines -AsHashtable
 
+Write-Progress -id 222 -Activity "Creating virtual machines" -PercentComplete 0
+
+$vmStep = (100 / $vmHash.virtualmachines.Count)
+$vmCount = 1
 foreach ($key in $vmHash.virtualmachines.Keys) {
     $node = $vmHash.virtualmachines[$key]
 
@@ -107,7 +142,7 @@ foreach ($key in $vmHash.virtualmachines.Keys) {
     # Clone the virtual machine from the imported template
     $vm = New-VM -VM $template -Name $name -ResourcePool $rp -Datastore $datastore -Location $folder -LinkedClone -ReferenceSnapshot $snapshot
 
-    $vm | New-AdvancedSetting -name "guestinfo.ignition.config.data" -value $ignition -confirm:$false -Force > $null
+    $vm | New-AdvancedSetting -name "guestinfo.ignition.config.data" -value $ignition -confirm:$false -Force
     $vm | New-AdvancedSetting -name "guestinfo.hostname" -value $name -Confirm:$false -Force
 
     # in OKD the OVA is not up-to-date
@@ -123,7 +158,12 @@ foreach ($key in $vmHash.virtualmachines.Keys) {
     else {
         $vm | Start-VM
     }
+    Write-Progress -id 222 -Activity "Creating virtual machines" -PercentComplete ($vmStep * $vmCount)
+    $vmCount++
 }
+Write-Progress -id 222 -Activity "Completed virtual machines" -PercentComplete 100 -Completed
+
+Clear-Host
 
 # Instead of restarting openshift-install to wait for bootstrap, monitor
 # the bootstrap configmap in the kube-system namespace
@@ -145,31 +185,66 @@ $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::Create
 $match = Select-String "server: (.*)" -Path ./auth/kubeconfig
 $kubeurl = $match.Matches.Groups[1].Value
 
-Write-Host -NoNewLine "Waiting for bootstrap to complete"
-# Wait for bootstrap to complete
+$apiTimeout = (20*60)
+$apiCount = 1
+$apiSleep = 30
+Write-Progress -Id 444 -Status "1% Complete" -Activity "API" -PercentComplete 1
+:api while ($true) {
+    Start-Sleep -Seconds $apiSleep
+    try {
+        $webrequest = Invoke-WebRequest -Uri "$($kubeurl)/version" -SkipCertificateCheck
+        $version = (ConvertFrom-Json $webrequest.Content).gitVersion
+
+	if ($version -ne "" ) {
+		Write-Debug "API Version: $($version)"
+    		Write-Progress -Id 444 -Status "Completed" -Activity "API" -PercentComplete 100
+		break api
+	}
+    }
+    catch {}
+
+    $percentage = ((($apiCount*$apiSleep)/$apiTimeout)*100)
+    if ($percentage -le 100) {
+       Write-Progress -Id 444 -Status "$percentage% Complete" -Activity "API" -PercentComplete $percentage
+    }
+    $apiCount++
+}
+
+
+$bootstrapTimeout = (30*60)
+$bootstrapCount = 1
+$bootstrapSleep = 30
+Write-Progress -Id 333 -Status "1% Complete" -Activity "Bootstrap" -PercentComplete 1
 :bootstrap while ($true) {
-    Start-Sleep -Seconds 30
-    Write-Host -NoNewLine "."
+    Start-Sleep -Seconds $bootstrapSleep
+
     try {
         $webrequest = Invoke-WebRequest -Certificate $cert -Uri "$($kubeurl)/api/v1/namespaces/kube-system/configmaps/bootstrap" -SkipCertificateCheck
 
         $bootstrapStatus = (ConvertFrom-Json $webrequest.Content).data.status
 
         if ($bootstrapStatus -eq "complete") {
-            Write-Host "`nBootstrap complete"
             Get-VM "$($metadata.infraID)-bootstrap" | Stop-VM -Confirm:$false | Remove-VM -Confirm:$false
+    	    Write-Progress -Id 333 -Status "Completed" -Activity "Bootstrap" -PercentComplete 100
             break bootstrap
         }
     }
     catch {}
+
+    $percentage = ((($bootstrapCount*$bootstrapSleep)/$bootstrapTimeout)*100)
+    if ($percentage -le 100) {
+       Write-Progress -Id 333 -Status "$percentage% Complete" -Activity "Bootstrap" -PercentComplete $percentage
+    } else {
+      Write-Output "Warning: Bootstrap taking longer than usual." -NoNewLine -ForegroundColor Yellow
+    }
+
+    $bootstrapCount++
 }
 
-
-Write-Host "Waiting for install to complete"
-# Wait for the cluster to complete
+$progressMsg = ""
+Write-Progress -Id 111 -Status "1% Complete" -Activity "Install" -PercentComplete 1
 :installcomplete while($true) {
     Start-Sleep -Seconds 30
-    Write-Host -NoNewline "."
     try {
         $webrequest = Invoke-WebRequest -Certificate $cert -Uri "$($kubeurl)/apis/config.openshift.io/v1/clusterversions" -SkipCertificateCheck
 
@@ -180,13 +255,20 @@ Write-Host "Waiting for install to complete"
             switch ($condition['type']) {
                 "Progressing" {
                     if ($condition['status'] -eq "True") {
-                        Write-Host -NoNewline "P"
+
+                        $matchper = ($condition['message'] | Select-String "^Working.*\(([0-9]{1,3})\%.*\)")
+                        $matchmsg = ($condition['message'] | Select-String -AllMatches -Pattern "^(Working.*)\:.*")
+
+                        $progressMsg = $matchmsg.Matches.Groups[1].Value
+			$progressPercent = $matchper.Matches.Groups[1].Value
+
+                        Write-Progress -Id 111 -Status "$progressPercent% Complete - $($progressMsg)" -Activity "Install" -PercentComplete $progressPercent
                         continue
                     }
                 }
                 "Available" {
                     if ($condition['status'] -eq "True") {
-                        Write-Host "`nInstall complete."
+                        Write-Progress -Id 111 -Activity "Install" -Status "Completed" -PercentComplete 100
                         break installcomplete
                     }
                     continue
