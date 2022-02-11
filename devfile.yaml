@@ -1,8 +1,0 @@
-apiVersion: 1.0.0
-metadata:
-  name: powershell-
-components:
-  - type: chePlugin
-    reference: 'https://raw.githubusercontent.com/jcpowermac/eclipse-che-powershell/main/meta.yaml'
-  - id: eclipse/che-theia/latest
-    type: cheEditor
