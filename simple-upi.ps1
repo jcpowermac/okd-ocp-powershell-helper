@@ -8,18 +8,19 @@ $ErrorActionPreference = "Stop"
 # Connect to vCenter
 Connect-VIServer -Server $vcenter -Credential (Import-Clixml $vcentercredpath)
 
+
 Write-Output "Downloading the most recent $($version) installer"
 
 $releaseApiUri = "https://api.github.com/repos/openshift/okd/releases"
 $progressPreference = 'silentlyContinue'
-$webrequest = Invoke-WebRequest -uri $releaseApiUri
+$webrequest = Invoke-WebRequest -uri $releaseApiUri 
 $progressPreference = 'Continue'
 $releases = ConvertFrom-Json $webrequest.Content -AsHashtable
 $publishedDate = (Get-Date).AddDays(-365)
 $currentRelease = $null
 
 foreach($r in $releases) {
-	if($r['name'] -like "*$($version)*") {
+	if($r['name'] -like "*$($version)*") { 
 		if ($publishedDate -lt $r['published_at'] ) {
 			$publishedDate = $r['published_at']
 			$currentRelease = $r
@@ -32,6 +33,8 @@ foreach($asset in $currentRelease['assets']) {
 		$installerUrl = $asset['browser_download_url']
 	}
 }
+
+
 
 # If openshift-install doesn't exist on the path, download it and extract
 if (-Not (Test-Path -Path "openshift-install")) {
@@ -92,7 +95,7 @@ $metadata = Get-Content -Path ./metadata.json | ConvertFrom-Json
 $templateName = "$($metadata.infraID)-rhcos"
 
 # If the folder already exists
-$folder = Get-Folder -Name $metadata.infraID -ErrorAction continue
+$folder = Get-Folder -Name $metadata.infraID -ErrorAction continue 
 
 # Otherwise create the folder within the datacenter as defined in the upi-variables
 if (-Not $?) {
@@ -110,7 +113,7 @@ if (-Not $?) {
     $ovfConfig.NetworkMapping.VM_Network.Value = $portgroup
     $template = Import-Vapp -Source "template-$($Version).ova" -Name $templateName -OvfConfiguration $ovfConfig -VMHost $vmhost -Datastore $Datastore -InventoryLocation $folder -Force:$true
 
-    $templateVIObj = Get-View -VIObject $template.Name
+    $templateVIObj = Get-View -VIObject $template.Name 
     $templateVIObj.UpgradeVM($hardwareVersion)
 
     $template | Set-VM -MemoryGB 16 -NumCpu 4 -CoresPerSocket 4 -Confirm:$false
@@ -188,7 +191,7 @@ $kubeurl = $match.Matches.Groups[1].Value
 $apiTimeout = (20*60)
 $apiCount = 1
 $apiSleep = 30
-Write-Progress -Id 444 -Status "1% Complete" -Activity "API" -PercentComplete 1
+Write-Progress -Id 444 -Status "1% Complete" -Activity "API" -PercentComplete 1 
 :api while ($true) {
     Start-Sleep -Seconds $apiSleep
     try {
@@ -197,16 +200,16 @@ Write-Progress -Id 444 -Status "1% Complete" -Activity "API" -PercentComplete 1
 
 	if ($version -ne "" ) {
 		Write-Debug "API Version: $($version)"
-    		Write-Progress -Id 444 -Status "Completed" -Activity "API" -PercentComplete 100
+    		Write-Progress -Id 444 -Status "Completed" -Activity "API" -PercentComplete 100 
 		break api
 	}
     }
     catch {}
 
     $percentage = ((($apiCount*$apiSleep)/$apiTimeout)*100)
-    if ($percentage -le 100) {
+    if ($percentage -le 100) { 
        Write-Progress -Id 444 -Status "$percentage% Complete" -Activity "API" -PercentComplete $percentage
-    }
+    } 
     $apiCount++
 }
 
@@ -214,7 +217,7 @@ Write-Progress -Id 444 -Status "1% Complete" -Activity "API" -PercentComplete 1
 $bootstrapTimeout = (30*60)
 $bootstrapCount = 1
 $bootstrapSleep = 30
-Write-Progress -Id 333 -Status "1% Complete" -Activity "Bootstrap" -PercentComplete 1
+Write-Progress -Id 333 -Status "1% Complete" -Activity "Bootstrap" -PercentComplete 1 
 :bootstrap while ($true) {
     Start-Sleep -Seconds $bootstrapSleep
 
@@ -225,14 +228,14 @@ Write-Progress -Id 333 -Status "1% Complete" -Activity "Bootstrap" -PercentCompl
 
         if ($bootstrapStatus -eq "complete") {
             Get-VM "$($metadata.infraID)-bootstrap" | Stop-VM -Confirm:$false | Remove-VM -Confirm:$false
-    	    Write-Progress -Id 333 -Status "Completed" -Activity "Bootstrap" -PercentComplete 100
+    	    Write-Progress -Id 333 -Status "Completed" -Activity "Bootstrap" -PercentComplete 100 
             break bootstrap
         }
     }
     catch {}
 
     $percentage = ((($bootstrapCount*$bootstrapSleep)/$bootstrapTimeout)*100)
-    if ($percentage -le 100) {
+    if ($percentage -le 100) { 
        Write-Progress -Id 333 -Status "$percentage% Complete" -Activity "Bootstrap" -PercentComplete $percentage
     } else {
       Write-Output "Warning: Bootstrap taking longer than usual." -NoNewLine -ForegroundColor Yellow
@@ -242,7 +245,7 @@ Write-Progress -Id 333 -Status "1% Complete" -Activity "Bootstrap" -PercentCompl
 }
 
 $progressMsg = ""
-Write-Progress -Id 111 -Status "1% Complete" -Activity "Install" -PercentComplete 1
+Write-Progress -Id 111 -Status "1% Complete" -Activity "Install" -PercentComplete 1 
 :installcomplete while($true) {
     Start-Sleep -Seconds 30
     try {
