@@ -19,7 +19,7 @@ RUN mkdir /notebooks ${HOME} && \
     done
 
 ADD entrypoint.sh /
-ADD okd.ipynb variables.ps1 /notebooks
+ADD okd.ipynb variables.ps1 /notebooks/
 
 RUN apt-get update \
     && apt-get install -yq --no-install-recommends \
