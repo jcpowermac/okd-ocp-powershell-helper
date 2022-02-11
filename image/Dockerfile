@@ -19,6 +19,7 @@ RUN mkdir /notebooks ${HOME} && \
     done
 
 ADD entrypoint.sh /
+ADD okd.ipynb variables.ps1 /notebooks
 
 RUN apt-get update \
     && apt-get install -yq --no-install-recommends \
@@ -63,7 +64,6 @@ RUN for f in "${HOME}"; do \
     done
 
 EXPOSE 8888
-#EXPOSE ${HTTP_PORT_RANGE}
 
 WORKDIR /notebooks
 

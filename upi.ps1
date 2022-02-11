@@ -59,7 +59,7 @@ if (-Not (Test-Path -Path "template-$($Version).ova")) {
 # Without having to add additional powershell modules yaml is difficult to deal
 # with. There is a supplied install-config.json which is converted to a powershell
 # object
-$config = Get-Content -Path ./install-config.json | ConvertFrom-Json
+$config = Get-Content -InputObject $installconfig | ConvertFrom-Json
 
 # Set the install-config.json from upi-variables
 $config.metadata.name = $clustername
