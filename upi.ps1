@@ -59,7 +59,7 @@ if (-Not (Test-Path -Path "template-$($Version).ova")) {
 # Without having to add additional powershell modules yaml is difficult to deal
 # with. There is a supplied install-config.json which is converted to a powershell
 # object
-$config = Get-Content -InputObject $installconfig | ConvertFrom-Json
+$config = ConvertFrom-Json -InputObject $installconfig 
 
 # Set the install-config.json from upi-variables
 $config.metadata.name = $clustername
@@ -114,11 +114,10 @@ if (-Not $?) {
     $templateVIObj = Get-View -VIObject $template.Name
     $templateVIObj.UpgradeVM($hardwareVersion)
 
-    $template | Set-VM -MemoryGB 16 -NumCpu 4 -CoresPerSocket 4 -Confirm:$false
-    $template | Get-HardDisk | Select-Object -First 1 | Set-HardDisk -CapacityGB 128 -Confirm:$false
-    $template | New-AdvancedSetting -name "guestinfo.ignition.config.data.encoding" -value "base64" -confirm:$false -Force
+    Set-VM -VM $template -MemoryGB 16 -NumCpu 4 -CoresPerSocket 4 -Confirm:$false > $null
+    Get-HardDisk -VM $template | Select-Object -First 1 | Set-HardDisk -CapacityGB 128 -Confirm:$false > $null
+    New-AdvancedSetting -Entity $template -name "guestinfo.ignition.config.data.encoding" -value "base64" -confirm:$false -Force > $null
     $snapshot = New-Snapshot -VM $template -Name "linked-clone" -Description "linked-clone" -Memory -Quiesce
-
 }
 
 # Take the $virtualmachines defined in upi-variables and convert to a powershell object
@@ -143,8 +142,8 @@ foreach ($key in $vmHash.virtualmachines.Keys) {
     # Clone the virtual machine from the imported template
     $vm = New-VM -VM $template -Name $name -ResourcePool $rp -Datastore $datastore -Location $folder -LinkedClone -ReferenceSnapshot $snapshot
 
-    $vm | New-AdvancedSetting -name "guestinfo.ignition.config.data" -value $ignition -confirm:$false -Force
-    $vm | New-AdvancedSetting -name "guestinfo.hostname" -value $name -Confirm:$false -Force
+    New-AdvancedSetting -Entity $vm -name "guestinfo.ignition.config.data" -value $ignition -confirm:$false -Force > $null
+    New-AdvancedSetting -Entity $vm -name "guestinfo.hostname" -value $name -Confirm:$false -Force > $null
 
     # in OKD the OVA is not up-to-date
     # causing very long startup times to pivot
@@ -282,3 +281,6 @@ Write-Progress -Id 111 -Status "1% Complete" -Activity "Install" -PercentComplet
 }
 
 Get-Job | Remove-Job
+
+
+Write-Output "Install Complete!"
