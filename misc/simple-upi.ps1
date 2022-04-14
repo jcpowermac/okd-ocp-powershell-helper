@@ -1,49 +1,22 @@
 #!/usr/bin/pwsh
 
-. .\variables.ps1
+. .\upi-variables.ps1
 
 $ErrorActionPreference = "Stop"
+
 
 # Connect to vCenter
 Connect-VIServer -Server $vcenter -Credential (Import-Clixml $vcentercredpath)
 
-Write-Output "Downloading the most recent $($version) installer"
-
-$releaseApiUri = "https://api.github.com/repos/openshift/okd/releases"
-$progressPreference = 'silentlyContinue'
-$webrequest = Invoke-WebRequest -uri $releaseApiUri
-$progressPreference = 'Continue'
-$releases = ConvertFrom-Json $webrequest.Content -AsHashtable
-$publishedDate = (Get-Date).AddDays(-365)
-$currentRelease = $null
-
-foreach($r in $releases) {
-	if($r['name'] -like "*$($version)*") {
-		if ($publishedDate -lt $r['published_at'] ) {
-			$publishedDate = $r['published_at']
-			$currentRelease = $r
-		}
-	}
-}
-
-foreach($asset in $currentRelease['assets']) {
-	if($asset['name'] -like "openshift-install-linux*") {
-		$installerUrl = $asset['browser_download_url']
-	}
-}
-
-
+# how to get the installer
+# change this to the api and grab the latest okd release based on version
+$installerUrl = "https://github.com/openshift/okd/releases/download/4.9.0-0.okd-2021-12-12-025847/openshift-install-linux-4.9.0-0.okd-2021-12-12-025847.tar.gz"
 
 # If openshift-install doesn't exist on the path, download it and extract
 if (-Not (Test-Path -Path "openshift-install")) {
-
-    $progressPreference = 'silentlyContinue'
     Invoke-WebRequest -uri $installerUrl -OutFile "installer.tar.gz"
     tar -xvf "installer.tar.gz"
-    $progressPreference = 'Continue'
 }
-
-Write-Output "Downloading FCOS OVA"
 
 # If the OVA doesn't exist on the path, determine the url from openshift-install and download it.
 if (-Not (Test-Path -Path "template-$($Version).ova")) {
@@ -51,15 +24,13 @@ if (-Not (Test-Path -Path "template-$($Version).ova")) {
 
     $coreosData = Get-Content -Path ./coreos.json | ConvertFrom-Json -AsHashtable
     $ovaUri = $coreosData.architectures.x86_64.artifacts.vmware.formats.ova.disk.location
-    $progressPreference = 'silentlyContinue'
     Invoke-WebRequest -uri $ovaUri -OutFile "template-$($Version).ova"
-    $progressPreference = 'Continue'
 }
 
 # Without having to add additional powershell modules yaml is difficult to deal
 # with. There is a supplied install-config.json which is converted to a powershell
 # object
-$config = ConvertFrom-Json -InputObject $installconfig
+$config = Get-Content -Path ./install-config.json | ConvertFrom-Json
 
 # Set the install-config.json from upi-variables
 $config.metadata.name = $clustername
@@ -78,12 +49,13 @@ $config.platform.vsphere.ingressVIP = $ingressvip
 $config.pullSecret = $pullsecret -replace "`n", "" -replace " ", ""
 
 # Write out the install-config.yaml (really json)
-$config | ConvertTo-Json -Depth 8 | Out-File -FilePath install-config.yaml -Force:$true
+$config | ConvertTo-Json | Out-File -FilePath install-config.yaml -Force:$true
 
 # openshift-install create manifests
 start-process -Wait -FilePath ./openshift-install -argumentlist @("create", "manifests")
 # openshift-install create ignition-configs
 start-process -Wait -FilePath ./openshift-install -argumentlist @("create", "ignition-configs")
+
 
 # Convert the installer metadata to a powershell object
 $metadata = Get-Content -Path ./metadata.json | ConvertFrom-Json
@@ -93,7 +65,7 @@ $metadata = Get-Content -Path ./metadata.json | ConvertFrom-Json
 $templateName = "$($metadata.infraID)-rhcos"
 
 # If the folder already exists
-$folder = Get-Folder -Name $metadata.infraID -ErrorAction continue
+$folder = Get-Folder -Name $metadata.infraID -ErrorAction continue > $null
 
 # Otherwise create the folder within the datacenter as defined in the upi-variables
 if (-Not $?) {
@@ -102,23 +74,19 @@ if (-Not $?) {
 }
 
 # If the fcos virtual machine already exists
-$template = Get-VM -Name $templateName -ErrorAction continue
+$template = Get-VM -Name $templateName -ErrorAction continue > $null
 
 # Otherwise import the ova to a random host on the vSphere cluster
 if (-Not $?) {
     $vmhost = Get-Random -InputObject (Get-VMHost -Location (Get-Cluster $cluster))
     $ovfConfig = Get-OvfConfiguration -Ovf "template-$($Version).ova"
     $ovfConfig.NetworkMapping.VM_Network.Value = $portgroup
-    $template = Import-Vapp -Source "template-$($Version).ova" -Name $templateName -OvfConfiguration $ovfConfig -VMHost $vmhost -Datastore $Datastore -InventoryLocation $folder -Force:$true
+    $template = Import-Vapp -Source "template-$($Version).ova" -Name $templateName -OvfConfiguration $ovfConfig -VMHost $vmhost -Datastore $Datastore -InventoryLocation $folder -Force:$true > $null
+    $template | Set-VM -MemoryGB 16 -NumCpu 4 -CoresPerSocket 4 -Confirm:$false > $null
+    $template | Get-HardDisk | Select-Object -First 1 | Set-HardDisk -CapacityGB 128 -Confirm:$false > $null
+    $template | New-AdvancedSetting -name "guestinfo.ignition.config.data.encoding" -value "base64" -confirm:$false -Force > $null
+    $snapshot = New-Snapshot -VM $template -Name "linked-clone" -Description "linked-clone" -Memory -Quiesce > $null
 
-    $templateVIObj = Get-View -VIObject $template.Name
-    $templateVIObj.UpgradeVM($hardwareVersion)
-
-    Set-VM -VM $template -MemoryGB 16 -NumCpu 4 -CoresPerSocket 4 -Confirm:$false > $null
-    Get-HardDisk -VM $template | Select-Object -First 1 | Set-HardDisk -CapacityGB 120 -Confirm:$false > $null
-    New-AdvancedSetting -Entity $template -name "disk.EnableUUID" -value 'TRUE' -confirm:$false -Force > $null
-    New-AdvancedSetting -Entity $template -name "guestinfo.ignition.config.data.encoding" -value "base64" -confirm:$false -Force > $null
-    $snapshot = New-Snapshot -VM $template -Name "linked-clone" -Description "linked-clone" -Memory -Quiesce
 }
 
 # Take the $virtualmachines defined in upi-variables and convert to a powershell object
@@ -126,7 +94,7 @@ $vmHash = ConvertFrom-Json -InputObject $virtualmachines -AsHashtable
 
 Write-Progress -id 222 -Activity "Creating virtual machines" -PercentComplete 0
 
-$vmStep = (100 / $vmHash.virtualmachines.Count)
+$vmStep = (100 / $vmHash.virtualmachines.Keys.length)
 $vmCount = 1
 foreach ($key in $vmHash.virtualmachines.Keys) {
     $node = $vmHash.virtualmachines[$key]
@@ -141,11 +109,10 @@ foreach ($key in $vmHash.virtualmachines.Keys) {
     $ignition = [Convert]::ToBase64String($bytes)
 
     # Clone the virtual machine from the imported template
-    $vm = New-VM -VM $template -Name $name -ResourcePool $rp -Datastore $datastore -Location $folder -LinkedClone -ReferenceSnapshot $snapshot
+    $vm = New-VM -VM $template -Name $name -ResourcePool $rp -Datastore $datastore -Location $folder -LinkedClone -ReferenceSnapshot $snapshot > $null
 
-
-    New-AdvancedSetting -Entity $vm -name "guestinfo.ignition.config.data" -value $ignition -confirm:$false -Force > $null
-    New-AdvancedSetting -Entity $vm -name "guestinfo.hostname" -value $name -Confirm:$false -Force > $null
+    $vm | New-AdvancedSetting -name "guestinfo.ignition.config.data" -value $ignition -confirm:$false -Force > $null
+    $vm | New-AdvancedSetting -name "guestinfo.hostname" -value $name -Confirm:$false -Force
 
     # in OKD the OVA is not up-to-date
     # causing very long startup times to pivot
@@ -158,14 +125,12 @@ foreach ($key in $vmHash.virtualmachines.Keys) {
         }
     }
     else {
-        $vm | Start-VM
+        $vm | Start-VM > $null
     }
     Write-Progress -id 222 -Activity "Creating virtual machines" -PercentComplete ($vmStep * $vmCount)
     $vmCount++
 }
 Write-Progress -id 222 -Activity "Completed virtual machines" -PercentComplete 100 -Completed
-
-Clear-Host
 
 # Instead of restarting openshift-install to wait for bootstrap, monitor
 # the bootstrap configmap in the kube-system namespace
@@ -187,66 +152,38 @@ $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::Create
 $match = Select-String "server: (.*)" -Path ./auth/kubeconfig
 $kubeurl = $match.Matches.Groups[1].Value
 
-$apiTimeout = (20*60)
-$apiCount = 1
-$apiSleep = 30
-Write-Progress -Id 444 -Status "1% Complete" -Activity "API" -PercentComplete 1
-:api while ($true) {
-    Start-Sleep -Seconds $apiSleep
-    try {
-        $webrequest = Invoke-WebRequest -Uri "$($kubeurl)/version" -SkipCertificateCheck
-        $version = (ConvertFrom-Json $webrequest.Content).gitVersion
+Write-Host -NoNewLine "Waiting for bootstrap to complete"
 
-	if ($version -ne "" ) {
-		Write-Debug "API Version: $($version)"
-    		Write-Progress -Id 444 -Status "Completed" -Activity "API" -PercentComplete 100
-		break api
-	}
-    }
-    catch {}
-
-    $percentage = ((($apiCount*$apiSleep)/$apiTimeout)*100)
-    if ($percentage -le 100) {
-       Write-Progress -Id 444 -Status "$percentage% Complete" -Activity "API" -PercentComplete $percentage
-    }
-    $apiCount++
-}
-
-
-$bootstrapTimeout = (30*60)
+$bootstrapTimeout = 20 * 60
+# Wait for bootstrap to complete
 $bootstrapCount = 1
 $bootstrapSleep = 30
-Write-Progress -Id 333 -Status "1% Complete" -Activity "Bootstrap" -PercentComplete 1
 :bootstrap while ($true) {
     Start-Sleep -Seconds $bootstrapSleep
+    Write-Host -NoNewLine "."
 
+    Write-Progress -Activity "Waiting for bootstrap" -PercentComplete [int]($bootstrapTimeout/($bootstrapCount*$bootstrapSleep)
     try {
         $webrequest = Invoke-WebRequest -Certificate $cert -Uri "$($kubeurl)/api/v1/namespaces/kube-system/configmaps/bootstrap" -SkipCertificateCheck
 
         $bootstrapStatus = (ConvertFrom-Json $webrequest.Content).data.status
 
         if ($bootstrapStatus -eq "complete") {
+            Write-Host "`nBootstrap complete"
             Get-VM "$($metadata.infraID)-bootstrap" | Stop-VM -Confirm:$false | Remove-VM -Confirm:$false
-    	    Write-Progress -Id 333 -Status "Completed" -Activity "Bootstrap" -PercentComplete 100
             break bootstrap
         }
     }
     catch {}
-
-    $percentage = ((($bootstrapCount*$bootstrapSleep)/$bootstrapTimeout)*100)
-    if ($percentage -le 100) {
-       Write-Progress -Id 333 -Status "$percentage% Complete" -Activity "Bootstrap" -PercentComplete $percentage
-    } else {
-      Write-Output "Warning: Bootstrap taking longer than usual." -NoNewLine -ForegroundColor Yellow
-    }
-
     $bootstrapCount++
 }
 
-$progressMsg = ""
-Write-Progress -Id 111 -Status "1% Complete" -Activity "Install" -PercentComplete 1
+
+Write-Host "Waiting for install to complete"
+# Wait for the cluster to complete
 :installcomplete while($true) {
     Start-Sleep -Seconds 30
+    Write-Host -NoNewline "."
     try {
         $webrequest = Invoke-WebRequest -Certificate $cert -Uri "$($kubeurl)/apis/config.openshift.io/v1/clusterversions" -SkipCertificateCheck
 
@@ -260,17 +197,13 @@ Write-Progress -Id 111 -Status "1% Complete" -Activity "Install" -PercentComplet
 
                         $matchper = ($condition['message'] | Select-String "^Working.*\(([0-9]{1,3})\%.*\)")
                         $matchmsg = ($condition['message'] | Select-String -AllMatches -Pattern "^(Working.*)\:.*")
-
-                        $progressMsg = $matchmsg.Matches.Groups[1].Value
-			$progressPercent = $matchper.Matches.Groups[1].Value
-
-                        Write-Progress -Id 111 -Status "$progressPercent% Complete - $($progressMsg)" -Activity "Install" -PercentComplete $progressPercent
+                        Write-Progress -Id 111 -Activity $matchmsg.Matches.Groups[1].Value -PercentComplete $matchper.Matches.Groups[1].Value
                         continue
                     }
                 }
                 "Available" {
                     if ($condition['status'] -eq "True") {
-                        Write-Progress -Id 111 -Activity "Install" -Status "Completed" -PercentComplete 100
+                        Write-Progress -Id 111 -Completed -Activity "Install Complete" -PercentComplete 100
                         break installcomplete
                     }
                     continue
@@ -283,6 +216,3 @@ Write-Progress -Id 111 -Status "1% Complete" -Activity "Install" -PercentComplet
 }
 
 Get-Job | Remove-Job
-
-
-Write-Output "Install Complete!"
