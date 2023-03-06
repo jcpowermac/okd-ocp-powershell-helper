@@ -155,6 +155,19 @@ $installconfig = @"
 }
 "@
 
+$minimalInstallConfig= @"
+{
+  "apiVersion": "v1",
+  "baseDomain": "domain",
+  "metadata": {
+    "name": "cluster"
+  },
+  "platform": {},
+  "pullSecret": "",
+  "sshKey": ""
+}
+"@
+
 $okdPullSecret = @"
 {"auths":{"fake":{"auth":"aWQ6cGFzcwo="}}}
 "@
